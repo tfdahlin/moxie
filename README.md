@@ -114,6 +114,7 @@ There are a few additional features that may be useful in some cases.
 
 ### See also
 [Requests: HTTP for Humans][1]
+
 [Hackers (1995)][2]
 
 [1]: https://python-requests.org/ "Requests: HTTP for Humans"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# Filename: moxie/tests/__init__.py
 """
 Allows for the creation of a simple HTTP server.
 

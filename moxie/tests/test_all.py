@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# Filename: moxie/tests/test_all.py
 from unittest import TestCase
 from ..tests import SimpleServer, SERVER_URL, HTTPS_SERVER_URL
 from .. import Session, OptionDoesNotExist

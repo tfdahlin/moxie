@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# Filename: moxie/moxie.py
 """
 Simplifies user interactions with web applications.
 

@@ -109,9 +109,6 @@ There are a few additional features that may be useful in some cases.
  - `Session.url` provides access to the base url of the Session. If there is no base url, the base url defaults to None.
  - `form` kwarg can be passed as a dictionary to a request to automatically set the `Content-Type` to `application/x-www-form-urlencoded` and convert the dictionary to a url-encoded string, to pass as the body of the request.
 
-#### TODO
- - Caching of web requests
-
 ### See also
 [Requests: HTTP for Humans][1]
 

@@ -128,3 +128,6 @@ dmypy.json
 
 # Unnecessary test files
 .noseids
+
+# Swap files
+*.swp

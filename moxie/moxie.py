@@ -9,14 +9,16 @@ In order to print out more details about a request, such as the exact content of
 The goal of this module is to provide functionality that more closely resembles that of a web client, to make automated interactions simpler, and to make debugging easier. It accomplishes this by allowing users to create stateful objects that automatically track and update cookies as necessary, and by providing methods that allow the user to easily customize output levels of request and response information.
 
 Classes:
-    Session:
+    Session: Object used for interacting with an application.
+    CachedPage: Used for keeping track of cached results. Used internally.
 
 Exceptions:
-    OptionDoesNotExist:
+    OptionDoesNotExist: Raised when trying to toggle a non-existent output option.
 """
 
-import requests, json, urllib.parse, re, warnings
-import urllib3
+import requests, json, urllib.parse, re, warnings, time
+import urllib3, http.cookiejar
+import requests.cookies
 from urllib.parse import unquote, quote
 
 class OptionDoesNotExist(KeyError):
@@ -32,7 +34,40 @@ class OptionDoesNotExist(KeyError):
     def __init__(self, msg):
         self.msg = msg
 
-class Session():
+class CachedPage:
+    """Use to cache the result of a request.
+
+    Args:
+        content (bytes): The raw response to a request.
+        etag (str): Identifier for the cached data.
+        max_age (int): Expiry time in seconds.
+
+    Attributes:
+        content (bytes): The raw cached response.
+        etag (str): Identifier for the cached data.
+        is_current (bool): Indicator of whether the expiry time for the cached content has lapsed.
+    """
+    def __init__(self, response, etag, max_age, nocache):
+        self.response = response
+        self.etag = etag
+        self._max_age = max_age
+        self._created = int(time.time())
+        self.nocache = nocache
+
+    @property
+    def is_current(self):
+        delta = int(time.time()) - self._created
+        return delta < self._max_age
+
+    def refresh(self, max_age, etag):
+        self._created = int(time.time())
+        if etag:
+            self.etag = etag
+        if max_age:
+            self._max_age = max_age
+
+
+class Session:
     """Client-like object for simplifying web application interactions.
 
     Args:
@@ -70,6 +105,7 @@ class Session():
         else:
             self._auth = None
         self._user_agent = 'Moxie Agent'
+        self._cache = {}
         
         # Default settings for a new object:
         # - Exceptions are not raised for status codes >= 400.
@@ -213,7 +249,7 @@ class Session():
         #  relevant information according to the options enabled.
         req = self._build_request(req_type, path, **kwargs)
         prep = self._prepare_request(req)
-        res = self._send_request(prep)
+        res = self._send_request(path, prep)
         self._update_cookies(res)
         if self.raise_status:
             res.raise_for_status()
@@ -223,10 +259,22 @@ class Session():
 
     def _update_cookies(self, response):
         if response.cookies:
-            #for cookie in response.cookies:
-                #self._cookies.update(cookie)
-            self._cookies.update(response.cookies)
-            #print("NEW COOKIES SENT.")
+            # New cookie jar
+            jar = requests.cookies.RequestsCookieJar()
+
+            result_cookies = {}
+            # copy current cookies into the dict
+            for cookie in self._cookies:
+                result_cookies[cookie.name] = cookie
+            # overwrite cookies with new ones
+            for cookie in response.cookies:
+                result_cookies[cookie.name] = cookie
+
+            # Fill the cookie jar
+            for _, cookie in result_cookies.items():
+                jar.set_cookie(cookie)
+            # update internal cookies
+            self._cookies = jar
 
     def _build_request(self, request_type, path, **kwargs):
         """Create the Request object for a request.
@@ -258,22 +306,33 @@ class Session():
             path = self._find_url_without_params(path)
             kwargs['params'] = k_v
 
-
+        # Construct url if necessary
         if self.url:
             url = self.url + path
         else:
             url = path
 
-
+        # Create headers as necessary
         if not kwargs:
             kwargs = {}
         if not 'headers' in kwargs:
             kwargs['headers'] = {}
         kwargs['headers']['User-Agent'] = self._user_agent
+
+        # Check if we have a cache
+        if path in self._cache:
+            # If so, and the cache hasn't expired
+            if self._cache[path].is_current:
+                if self._cache[path].nocache:
+                    # If nocache is specified, verify contents
+                    kwargs['headers']['If-None-Match'] = self._cache[path].etag
+                #else:
+                    # If nocache isn't specified, load cached contents instead
+                    #  of requesting again.
+                #    return self._cache[path].response
         
         # Make form submission easier, it's annoying currently
         if 'form' in kwargs:
-            #params = '&'.join([f"{quote(k)}={quote(v)}" for k,v in kwargs['form'].items()])
             # Start better input validation
             params = []
             if isinstance(kwargs['form'], dict):
@@ -310,7 +369,7 @@ class Session():
         """
         return request.prepare()
 
-    def _send_request(self, prepared_request):
+    def _send_request(self, path, prepared_request):
         """Send the PreparedRequest object to the web application.
 
         Args:
@@ -319,6 +378,14 @@ class Session():
         Returns:
             Response object from requests library.
         """
+        # If we have a cached page, and it isn't tagged as nocache, use that.
+        if path in self._cache:
+            if not self._cache[path].nocache and self._cache[path].is_current:
+                cached_res = self._cache[path].response
+                self._res = cached_res
+                self._res.reason = '(cache)'
+                return self._res
+
         s = requests.Session()
 
         proxy = None
@@ -327,11 +394,87 @@ class Session():
 
         # Send the request, verifying the response if the user has enabled
         #  this option.
-        self._res = s.send( prepared_request, 
+        res = s.send( prepared_request, 
                             verify=self.verify, 
                             proxies=proxy)
+        etag, cache_control = self._get_etag_and_cache_control(res)
+
+        # Special case if cache is 304 Not Modified
+        if res.status_code == 304:
+            # Fetch cached response
+            cached_res = self._cache[path]
+
+            # Extract cache controls
+            controls = self._extract_controls(cache_control)
+
+            if 'max-age' in controls:
+                max_age = int(controls['max-age'])
+            else:
+                max_age = None
+
+            self._cache[path].refresh(max_age, etag)
+            res._content = cached_res.response.content
+            self._res = res
+            return self._res
+
+        if cache_control:
+            self._process_caching(path, res, etag, cache_control)
+                
+        self._res = res
         return self._res
 
+    def _get_etag_and_cache_control(self, res):
+        """Extracts ETag header and cache-control header from response."""
+        etag = None
+        cache_control = None
+        for header, value in res.headers.items():
+            # We need to iterate to account for case-insensitivity
+            etag_regex = 'etag'
+            cache_control_regex = 'cache-control'
+            match = re.search(etag_regex, header, re.IGNORECASE)
+            if match:
+                etag = value
+            match = re.search(cache_control_regex, header, re.IGNORECASE)
+            if match:
+                if len(value) > 0:
+                    cache_control = value
+            # TODO:handle EXPIRES and VARY headers
+        return etag, cache_control
+
+    def _extract_controls(self, cache_control):
+        """Extract controls from cache_control string into a case-insensitive dict."""
+        controls = {}
+        # List of all controls
+        controls_list = cache_control.split(',')
+        for control in controls_list:
+            # Split each control at the equal sign
+            tmp = control.strip().split('=')
+            # If there was an equal sign
+            if len(tmp) > 1:
+                controls[tmp[0].lower()] = tmp[1]
+            # If there wasn't an equal sign
+            else:
+                controls[tmp[0].lower()] = True
+        return controls
+
+    def _process_caching(self, path, res, etag, cache_control):
+        """Place elements in the cache if necessary."""
+        # If the cache-control isn't no-store, we want to do some caching
+        if not re.search('no-store', cache_control, re.IGNORECASE):
+            # find all cache-control controls
+            controls = self._extract_controls(cache_control)
+            if 'max-age' in controls:
+                max_age = int(controls['max-age'])
+            else:
+                max_age = 0
+            if 'no-cache' in controls:
+                self._cache[path] = CachedPage(res, etag, max_age, nocache=True)
+            else:
+                self._cache[path] = CachedPage(res, etag, max_age, nocache=False)
+            # We ignore public/private cache-controls. We're a client device.
+        
+            
+        
     @property
     def all_request_output_options(self):
         """
@@ -705,7 +848,7 @@ class Session():
             if req.cookies:
                 print("Cookies:")
                 for cookie in req.cookies:
-                    print(f"{cookie.name}: {cookie.value}")
+                    print(f"    {cookie.name}: {cookie.value}")
         # Output body of the request as necessary
         if(self.req_output_options['body']):
                 if req.files or req.data or req.json:
@@ -832,6 +975,10 @@ class Session():
     def clear_cookies(self):
         """Clears the cookies associate with the Session object."""
         self._cookies = requests.cookies.RequestsCookieJar()
+
+    def clear_cache(self):
+        """Clears all cached pages."""
+        self._cache = {}
 
     @property
     def user_agent(self):

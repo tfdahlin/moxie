@@ -49,9 +49,14 @@ http_server = None
 
 https_server = None
 
+toggle = None
+
 # HTTPRequestHandler class
 class SimpleHTTPServerRequestHandler(BaseHTTPRequestHandler):
     """BaseHTTPRequestHandler subclass for handling HTTP requests."""
+    def __init__(self, *args, **kwargs):
+        #self.toggle = None
+        super().__init__(*args, **kwargs)
 
     def _parse_multipart(self, raw, delimiter):
         """Parse multipart/form-data requests into a dict"""
@@ -150,12 +155,129 @@ class SimpleHTTPServerRequestHandler(BaseHTTPRequestHandler):
                 all_cookies = '&'.join(all_cookies)
                 self.send_header('Set-Cookie', all_cookies)
         else:
-            print("NOT UPDATING COOKIE")
+            pass
+            #print("NOT UPDATING COOKIE")
         if headers:
             for header, header_value in headers.items():
                 self.send_header(header, header_value)
         self.end_headers()
     
+    def return_non_json(self):
+        """Return a non-json response."""
+        self._set_headers(content_type='text/html',headers={'X-TEST-REQUEST_TYPE': 'GET'})
+        self.wfile.write(bytes(''.join([
+        '<!DOCTYPE html>',
+        '<html>',
+            '<head>',
+                '<title>Website title.</title>',
+            '</head>',
+            '<body>',
+                'Webpage body.',
+            '</body>',
+        '</html>'])
+        , 'UTF-8'))
+        return
+
+    def check_auth(self):
+        """Check basic auth request."""
+
+        # Extract the username/password from the url
+        auth_string = self.path[12:]
+        auth_user = auth_string.split(':')[0]
+        auth_pass = auth_string.split(':')[1]
+       
+        # Assert that the authorizaiton header exists 
+        if not self.headers['Authorization']:
+            raise Exception('Basic auth missing.')
+
+        # Should be formatted as 'Basic <b64 encoded authstring>'
+        basic_auth = self.headers['Authorization'].split()[1]
+        # Mismatch means failue
+        if base64.b64encode(bytes(auth_string, 'UTF-8')) != bytes(basic_auth, 'UTF-8'):
+            self._set_headers(code=500, headers={'X-TEST-REQUEST_TYPE': 'GET'})
+            self.wfile.write(bytes(json.dumps({'success': False}), 'UTF-8'))
+            return
+        # Otherwise return success.
+        self._set_headers(headers={'X-TEST-REQUEST_TYPE': 'GET'})
+        self.wfile.write(bytes(json.dumps({'success': True}), 'UTF-8'))
+        return
+
+    def process_cache(self):
+        """Handle cache requests."""
+        global toggle
+
+        # Extract the remainder of the path string
+        subpath = self.path[7:]
+        cache_controls = []
+        response_code = 200
+        etag = 'thisismyetag'
+        # GET /cache/no-store
+        if 'no-store' in subpath:
+            cache_controls.append('No-Store')
+        elif 'no-cache' in subpath:
+            cache_controls.append('No-Cache')
+            # GET /cache/no-cache/mismatch
+            if 'mismatch' in subpath:
+                # Switch between the two etags
+                if toggle:
+                    etag = 'mismatchedtag'
+                    toggle = None
+                else:
+                    etag = 'thesedontmatch'
+                    toggle = True
+            else:
+                # If we aren't asking for a mismatch, check if the tag is passed
+                if 'If-None-Match' in self.headers:
+                    if self.headers['If-None-Match'] == 'thisismyetag':
+                        response_code = 304
+            
+            # If max-age is to be passed
+            if 'no-max-age' not in subpath:
+                # GET /cache/no-cache/short
+                if 'short' in subpath:
+                    cache_controls.append('max-age=1')
+                # GET /cache/no-cache
+                else:
+                    cache_controls.append('max-age=1200')
+            else:
+                # GET /cache/no-cache/no-max-age
+                # If max-age isn't supposed to be passed
+                if toggle:
+                    toggle = None
+                else:
+                    cache_controls.append('max-age=3')
+                    toggle = True
+                
+            if 'no-etag' in subpath:
+                if toggle:
+                    etag = None
+                    toggle = None
+                else:
+                    etag = 'thisismyetag'
+                    toggle = True
+        elif 'empty' in subpath:
+            cache_controls.append('')
+            pass
+        else:
+            if 'If-None-Match' in self.headers:
+                if self.headers['If-None-Match'] == 'thisismyetag':
+                    response_code = 304
+            if 'no-max-age' not in subpath:
+                cache_controls.append('max-age=1200')
+            else:
+                cache_controls.append('Public')
+        cache_control_string = ', '.join(cache_controls)
+        res_headers = {
+            'X-TEST-REQUEST_TYPE': 'GET',
+            'Cache-Control': cache_control_string,
+        }
+        if etag:
+            res_headers['ETag'] = etag
+        self._set_headers(code=response_code, headers=res_headers)
+        self.wfile.write(bytes(json.dumps({'success': True}), 'UTF-8'))
+        return
+        
+
     def do_GET(self):
         """Handle GET requests."""
         if self.path == '/404': # special 404 route
@@ -165,40 +287,17 @@ class SimpleHTTPServerRequestHandler(BaseHTTPRequestHandler):
             self._set_headers(code=301, headers={'Location': 'http://' + self.address_string() + ':' + str(self.connection.getsockname()[1]) + '/'})
             return
         if self.path == '/non-json': # special route that returns non-json
-            self._set_headers(content_type='text/html',headers={'X-TEST-REQUEST_TYPE': 'GET'})
-            self.wfile.write(bytes(''.join([
-            '<!DOCTYPE html>',
-            '<html>',
-                '<head>',
-                    '<title>Website title.</title>',
-                '</head>',
-                '<body>',
-                    'Webpage body.',
-                '</body>',
-            '</html>'])
-            , 'UTF-8'))
+            self.return_non_json()
             return
         if self.path == '/no-update-cookie':
             self._set_headers(headers={'X-TEST-REQUEST_TYPE': 'GET'}, update_cookie=False)
             self.wfile.write(bytes(json.dumps({'success': True, 'request_type': 'GET'}), 'UTF-8'))
             return
         if self.path.startswith('/check-auth/'):
-            # Extract the username/password from the url
-            auth_string = self.path[12:]
-            auth_user = auth_string.split(':')[0]
-            auth_pass = auth_string.split(':')[1]
-           
-            # Assert that the authorizaiton header exists 
-            if not self.headers['Authorization']:
-                raise Exception('Basic auth missing.')
-
-            basic_auth = self.headers['Authorization'].split()[1]
-            if base64.b64encode(bytes(auth_string, 'UTF-8')) != bytes(basic_auth, 'UTF-8'):
-                self._set_headers(code=500, headers={'X-TEST-REQUEST_TYPE': 'GET'})
-                self.wfile.write(bytes(json.dumps({'success': False}), 'UTF-8'))
-                return
-            self._set_headers(headers={'X-TEST-REQUEST_TYPE': 'GET'})
-            self.wfile.write(bytes(json.dumps({'success': True}), 'UTF-8'))
+            self.check_auth()
+            return
+        if self.path.startswith('/cache/'):
+            self.process_cache()
             return
         self._set_headers(headers={'X-TEST-REQUEST_TYPE': 'GET'})
         self.wfile.write(bytes(json.dumps({'success': True}), 'UTF-8'))
@@ -248,7 +347,10 @@ class SimpleHTTPServerRequestHandler(BaseHTTPRequestHandler):
         
         Use almost the same behavior, but log to stdout instead of stderr so that nose will capture the output when running tests.
         """
-        debug = True
+        debug = False
+        silent = True
+        if silent:
+            return
         if debug:
             print(f"{self.address_string()} - - [{self.log_date_time_string()}] {format%args}\n")
         else:

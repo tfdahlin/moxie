@@ -401,19 +401,24 @@ class TestSession(TestCase):
 
     def test_proxy(self):
         """Test a proxy."""
+        #return
         sess = Session(SERVER_URL)
+        #sess.verbose()
         sess.silence()
         sess.enable_proxy()
         assert sess.proxy_enabled, 'Proxy not enabled.'
-        # Test proxy with given port as argument
-        sess.set_proxy('http', '127.0.0.1', '9001')
-        # TODO: Set up a proxy to test with.
 
-        sess.set_proxy('http', '127.0.0.1:9001')
-        # TODO: Perform the same test as above, this time with port in the url
+        # Test proxy with given port as argument
+        sess.set_proxy('http', '127.0.0.1', '9003')
+        res = sess.get('/')
+        assert res.status_code == 200, 'Proxy was not successful.'
+
+        sess.set_proxy('http', '127.0.0.1:9003')
+        res = sess.get('/')
+        assert res.status_code == 200, 'Proxy was not successful.'
+
         sess.disable_proxy()
         assert not sess.proxy_enabled, 'Proxy not disabled.'
-        # TODO: Test that proxy is no longer processing requests
 
     def test_url_encode_param_dict_with_ints(self):
         """Test that url-encoding a param dict with integers works."""

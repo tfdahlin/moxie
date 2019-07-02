@@ -532,3 +532,13 @@ class TestSession(TestCase):
         res = sess.get('/cache')
         assert res.status_code == 200, '200 not returned for GET request to /cache'
         assert res.reason != '(cache)', 'Request not cached.'
+
+    def test_authorization_header(self):
+        """Test that basic auth credentials are printed."""
+        sess = Session(SERVER_URL, auth_user='user', auth_pass='pass')
+        sess.silence()
+        with captured_output() as (out, err):
+            sess.enable_request_output_option('auth')
+            res = sess.get('/check-auth/user:pass')
+            output = out.getvalue().strip()
+        assert 'Authorization' in output, 'Authorization header not printed.'

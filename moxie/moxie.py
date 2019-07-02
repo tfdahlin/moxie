@@ -253,7 +253,7 @@ class Session:
         self._update_cookies(res)
         if self.raise_status:
             res.raise_for_status()
-        self.print_request(self._req)
+        self.print_request(self._req, prep)
         self.print_response(self._res)
         return res
 
@@ -817,7 +817,7 @@ class Session:
             string = '='*int(diff/2) + string + '='*int(diff/2)
         return string
 
-    def print_request(self, req):
+    def print_request(self, req, prep):
         """Print details about each request that is made.
         This method is called whenever a request is made, so output options should be customized for your application.
 
@@ -843,12 +843,17 @@ class Session:
             print(method_url)
         # Output headers and cookies as necessary
         if(self.req_output_options['headers']):
-            if len(req.headers.items()) > 0:
-                print('\n'.join('{}: {}'.format(k, v) for k, v in req.headers.items()))
+            if len(prep.headers.items()) > 0:
+                print('\n'.join('{}: {}'.format(k, v) for k, v in prep.headers.items()))
             if req.cookies:
                 print("Cookies:")
                 for cookie in req.cookies:
                     print(f"    {cookie.name}: {cookie.value}")
+        else: # If we aren't printing all headers, but we are printing auth
+            if(self.req_output_options['auth'] and len(prep.headers.items()) > 0):
+                for k, v in prep.headers.items():
+                    if 'authorization' in k.lower():
+                        print(f"{k} {v}")
         # Output body of the request as necessary
         if(self.req_output_options['body']):
                 if req.files or req.data or req.json:

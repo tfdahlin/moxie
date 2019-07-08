@@ -20,7 +20,7 @@ setuptools.setup(
     license=license,
     classifiers=[
         'Programming Language :: Python :: 3',
-        #'License :: OSI Approved :: MIT License',
+        'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],
 
@@ -34,7 +34,7 @@ setuptools.setup(
     # Contact information
     author='Taylor Fox Dahlin',
     author_email='tfdahlin@gmail.com',
-    url='', # GITHUB URL GOES HERE -- personal github or 2uinc?
+    url='https://github.com/tfdahlin/moxie',
 
     # Tests
     test_suite='nose.collector',
